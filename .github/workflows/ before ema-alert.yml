@@ -1,13 +1,7 @@
-# Save this file in your repo as: .github/workflows/ema-alert.yml
 name: EMA 21/50 crossover alert
 
 on:
-  schedule:
-    # UTC times. 04:02-09:47 UTC = 09:32-15:17 IST, plus 10:02 UTC = 15:32 IST.
-    # Runs Mon-Fri, a couple of minutes after each 15-min candle closes.
-    - cron: "2,17,32,47 4-9 * * 1-5"
-    - cron: "2 10 * * 1-5"
-  workflow_dispatch: {}   # lets you run it manually to test
+  workflow_dispatch: {}
 
 jobs:
   scan:
