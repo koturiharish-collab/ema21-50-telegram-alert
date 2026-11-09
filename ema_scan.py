@@ -19,7 +19,7 @@ CANDLE = timedelta(minutes=15)
 BATCH = 100
 
 # Set to False once you have confirmed Telegram works
-TEST_PING = True
+TEST_PING = False
 
 latest_candle_seen = None  # for diagnostics
 
