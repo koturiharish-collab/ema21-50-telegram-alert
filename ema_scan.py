@@ -1,5 +1,5 @@
 """Single-run EMA21/EMA50 crossover scan for all NSE EQ stocks (Daily candles).
-Designed to be run on a schedule (GitHub Actions). Sends Telegram alerts."""
+Designed to run on GitHub Actions. Sends Telegram alerts and scan reports."""
 
 import io
 import os
@@ -12,6 +12,7 @@ import requests
 import yfinance as yf
 
 IST = pytz.timezone("Asia/Kolkata")
+
 TG_TOKEN = os.environ["TG_TOKEN"]
 TG_CHAT_ID = os.environ["TG_CHAT_ID"]
 
@@ -19,30 +20,44 @@ FAST, SLOW = 21, 50
 CANDLE = timedelta(days=1)
 BATCH = 100
 
-# Set to False once you have confirmed Telegram works
 TEST_PING = False
 
-latest_candle_seen = None  # for diagnostics
+latest_candle_seen = None
 
 
 def load_symbols():
     url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+
+    r = requests.get(
+        url,
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=30
+    )
+
     r.raise_for_status()
+
     df = pd.read_csv(io.StringIO(r.text))
     df.columns = [c.strip() for c in df.columns]
+
     df = df[df["SERIES"].str.strip() == "EQ"]
+
     return [s.strip() + ".NS" for s in df["SYMBOL"]]
 
 
 def send(msg):
     print(msg)
+
     r = requests.post(
         f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-        data={"chat_id": TG_CHAT_ID, "text": msg},
-        timeout=15,
+        data={
+            "chat_id": TG_CHAT_ID,
+            "text": msg
+        },
+        timeout=15
     )
+
     print("Telegram response:", r.status_code, r.text[:200])
+
     r.raise_for_status()
 
 
@@ -61,6 +76,7 @@ def scan(symbols, now):
     out = []
 
     for sym in symbols:
+
         try:
             close = (
                 data[sym]["Close"]
@@ -71,43 +87,53 @@ def scan(symbols, now):
             if len(close) == 0:
                 continue
 
-            # Keep only fully closed daily candles
-            close = close[[ts + CANDLE <= now for ts in close.index]]
+            # Keep only fully completed daily candles
+            close = close[
+                [ts + CANDLE <= now for ts in close.index]
+            ]
 
             if len(close) < SLOW + 2:
                 continue
 
             ts = close.index[-1]
 
-            if latest_candle_seen is None or ts > latest_candle_seen:
+            if (
+                latest_candle_seen is None
+                or ts > latest_candle_seen
+            ):
                 latest_candle_seen = ts
 
             diff = (
                 close.ewm(span=FAST, adjust=False).mean()
-                - close.ewm(span=SLOW, adjust=False).mean()
+                -
+                close.ewm(span=SLOW, adjust=False).mean()
             )
 
-            prev, curr = diff.iloc[-2], diff.iloc[-1]
+            prev = diff.iloc[-2]
+            curr = diff.iloc[-1]
 
-            # Only alert on a cross that happened on the latest closed candle
+            # Only alert on the latest completed daily candle
             if now - (ts + CANDLE) >= CANDLE:
                 continue
 
             name = sym[:-3]
 
             if prev <= 0 < curr:
+
                 out.append(
-                    f"BULLISH {name}: EMA{FAST} crossed ABOVE EMA{SLOW} @ "
-                    f"{close.iloc[-1]:.2f} ({ts:%H:%M})"
+                    f"BULLISH {name}: EMA{FAST} crossed ABOVE "
+                    f"EMA{SLOW} @ {close.iloc[-1]:.2f}"
                 )
 
             elif prev >= 0 > curr:
+
                 out.append(
-                    f"BEARISH {name}: EMA{FAST} crossed BELOW EMA{SLOW} @ "
-                    f"{close.iloc[-1]:.2f} ({ts:%H:%M})"
+                    f"BEARISH {name}: EMA{FAST} crossed BELOW "
+                    f"EMA{SLOW} @ {close.iloc[-1]:.2f}"
                 )
 
         except Exception as e:
+
             print(f"error on {sym}: {e}")
             continue
 
@@ -115,29 +141,52 @@ def scan(symbols, now):
 
 
 def main():
+
     now = datetime.now(IST)
 
     if TEST_PING:
-        send(f"EMA scan started {now:%d-%b %H:%M} IST")
+        send(
+            f"EMA scan started {now:%d-%b %H:%M} IST"
+        )
 
     symbols = load_symbols()
 
     alerts = []
 
     for i in range(0, len(symbols), BATCH):
-        alerts += scan(symbols[i:i + BATCH], now)
 
-    print(
-        f"{now:%d-%b %H:%M} IST: scanned "
-        f"{len(symbols)} stocks, {len(alerts)} crossovers"
+        alerts += scan(
+            symbols[i:i + BATCH],
+            now
+        )
+
+    bullish_count = sum(
+        1 for a in alerts
+        if a.startswith("BULLISH")
     )
 
-    print(f"Latest closed candle seen in data: {latest_candle_seen}")
+    bearish_count = sum(
+        1 for a in alerts
+        if a.startswith("BEARISH")
+    )
 
+    print(
+        f"{now:%d-%b %H:%M} IST: "
+        f"scanned {len(symbols)} stocks, "
+        f"{len(alerts)} crossovers"
+    )
+
+    print(
+        f"Latest closed candle seen: {latest_candle_seen}"
+    )
+
+    # Send crossover alerts
     chunk = ""
 
     for a in alerts:
+
         if len(chunk) + len(a) > 3500:
+
             send(chunk)
             chunk = ""
 
@@ -145,6 +194,22 @@ def main():
 
     if chunk:
         send(chunk)
+
+    # Send daily scanner summary
+    report = (
+        "📊 NSE DAILY EMA SCANNER\n\n"
+        f"📅 Date: {now:%d-%b-%Y}\n"
+        f"⏰ Time: {now:%H:%M} IST\n"
+        "📈 Timeframe: DAILY (1D)\n\n"
+        f"🔍 Total Stocks Scanned: {len(symbols)}\n"
+        f"🟢 Bullish Crossovers: {bullish_count}\n"
+        f"🔴 Bearish Crossovers: {bearish_count}\n\n"
+        "✅ Scanner Status: SUCCESS\n"
+        "📡 Data Source: Yahoo Finance\n"
+        "📊 Indicators: EMA 21 / EMA 50"
+    )
+
+    send(report)
 
 
 if __name__ == "__main__":
